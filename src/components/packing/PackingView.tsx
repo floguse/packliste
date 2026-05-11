@@ -1,10 +1,15 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, RotateCcw, CheckCircle2, ChevronDown, ChevronRight, Pencil } from 'lucide-react'
+import {
+  DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, DragEndEvent,
+} from '@dnd-kit/core'
+import { SortableContext, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../contexts/AuthContext'
 import { Trip, TripItem, Category } from '../../types'
 import EditTripSheet from './EditTripSheet'
+import SortableItem from '../ui/SortableItem'
 
 interface GroupedItems {
   category: Category
@@ -38,6 +43,11 @@ export default function PackingView() {
   const [resetting, setResetting] = useState(false)
   const [finishing, setFinishing] = useState(false)
   const [editing, setEditing] = useState(false)
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+  )
 
   const loadData = useCallback(async () => {
     if (!id) return
@@ -76,6 +86,11 @@ export default function PackingView() {
 
     const sorted = Array.from(categoryMap.values())
       .sort((a, b) => a.category.sort_order - b.category.sort_order)
+      .map(g => ({
+        ...g,
+        // Sort items within category by trip_items.sort_order
+        items: [...g.items].sort((a, b) => (a as any).sort_order - (b as any).sort_order),
+      }))
 
     setGroups(sorted as GroupedItems[])
     setLoading(false)
@@ -159,6 +174,24 @@ export default function PackingView() {
       }))
     )
     setResetting(false)
+  }
+
+  async function handleItemDragEnd(event: DragEndEvent, catId: string) {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const groupIdx = groups.findIndex(g => g.category.id === catId)
+    if (groupIdx === -1) return
+    const items = groups[groupIdx].items
+    const oldIdx = items.findIndex(i => i.id === active.id)
+    const newIdx = items.findIndex(i => i.id === over.id)
+    const reordered = arrayMove(items, oldIdx, newIdx)
+    const newGroups = groups.map((g, i) => i === groupIdx ? { ...g, items: reordered } : g)
+    setGroups(newGroups)
+    await Promise.all(
+      reordered.map((item, i) =>
+        supabase.from('trip_items').update({ sort_order: i }).eq('id', item.id).then(() => {})
+      )
+    )
   }
 
   async function finishTrip() {
@@ -282,32 +315,46 @@ export default function PackingView() {
 
               {!isCollapsed && (
                 <div className="border-t border-gray-50">
-                  {items.map(item => (
-                    <button
-                      key={item.id}
-                      onClick={() => trip.status !== 'done' && togglePacked(item)}
-                      disabled={trip.status === 'done'}
-                      className={`w-full flex items-center gap-3 px-4 py-3.5 border-b border-gray-50 last:border-b-0 text-left transition-colors active:bg-gray-50 ${
-                        item.packed ? 'bg-green-50' : ''
-                      }`}
-                    >
-                      <div className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
-                        item.packed ? 'bg-green-500 border-green-500' : 'border-gray-300'
-                      }`}>
-                        {item.packed && <CheckCircle2 size={14} className="text-white" strokeWidth={2.5} />}
-                      </div>
-                      <span className={`flex-1 text-sm font-medium transition-colors ${
-                        item.packed ? 'line-through text-gray-400' : 'text-gray-700'
-                      }`}>
-                        {(item.item as any)?.name ?? ''}
-                      </span>
-                      {item.quantity > 1 && (
-                        <span className={`text-xs font-medium ${item.packed ? 'text-gray-300' : 'text-gray-400'}`}>
-                          ×{item.quantity}
-                        </span>
-                      )}
-                    </button>
-                  ))}
+                  <DndContext
+                    sensors={sensors}
+                    collisionDetection={closestCenter}
+                    onDragEnd={e => handleItemDragEnd(e, category.id)}
+                  >
+                    <SortableContext items={items.map(i => i.id)} strategy={verticalListSortingStrategy}>
+                      {items.map(item => (
+                        <SortableItem key={item.id} id={item.id}>
+                          {(handle) => (
+                            <div className={`flex items-center border-b border-gray-50 last:border-b-0 transition-colors ${
+                              item.packed ? 'bg-green-50' : ''
+                            }`}>
+                              {trip.status === 'packing' && handle}
+                              <button
+                                onClick={() => trip.status !== 'done' && togglePacked(item)}
+                                disabled={trip.status === 'done'}
+                                className="flex-1 flex items-center gap-3 px-3 py-3.5 text-left active:bg-gray-50"
+                              >
+                                <div className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
+                                  item.packed ? 'bg-green-500 border-green-500' : 'border-gray-300'
+                                }`}>
+                                  {item.packed && <CheckCircle2 size={14} className="text-white" strokeWidth={2.5} />}
+                                </div>
+                                <span className={`flex-1 text-sm font-medium transition-colors ${
+                                  item.packed ? 'line-through text-gray-400' : 'text-gray-700'
+                                }`}>
+                                  {(item.item as any)?.name ?? ''}
+                                </span>
+                                {item.quantity > 1 && (
+                                  <span className={`text-xs font-medium ${item.packed ? 'text-gray-300' : 'text-gray-400'}`}>
+                                    ×{item.quantity}
+                                  </span>
+                                )}
+                              </button>
+                            </div>
+                          )}
+                        </SortableItem>
+                      ))}
+                    </SortableContext>
+                  </DndContext>
                 </div>
               )}
             </div>

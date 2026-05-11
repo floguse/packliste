@@ -191,6 +191,24 @@ export default function EditTripSheet({ tripId, currentTripItems, onClose, onSav
           </div>
         )}
 
+        {/* Select all row */}
+        {loadedCats.has(activeTab) && (itemsByCategory[activeTab] ?? []).length > 0 && (() => {
+          const catItems = itemsByCategory[activeTab] ?? []
+          const allSel = catItems.every(it => selections[it.id]?.selected)
+          return (
+            <button
+              onClick={() => catItems.forEach(it => setSelections(prev => ({
+                ...prev,
+                [it.id]: { selected: !allSel, quantity: prev[it.id]?.quantity ?? 1 },
+              })))}
+              className="w-full flex items-center justify-between px-4 py-2.5 rounded-xl bg-gray-50 border border-gray-100 text-sm"
+            >
+              <span className="text-gray-500">Alle in dieser Kategorie</span>
+              <span className="font-medium text-blue-600">{allSel ? 'Alle abwählen' : 'Alle auswählen'}</span>
+            </button>
+          )
+        })()}
+
         {(itemsByCategory[activeTab] ?? []).map(item => {
           const sel = selections[item.id]
           const isSelected = sel?.selected ?? false

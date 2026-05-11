@@ -265,7 +265,24 @@ export default function PlanningWizard() {
         {/* Step 2: Category selection */}
         {step === 2 && (
           <div className="px-4 py-6 space-y-3">
-            <p className="text-sm text-gray-500">Wähle die Kategorien, die du für diese Reise benötigst.</p>
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-gray-500">Wähle die Kategorien für diese Reise.</p>
+              <button
+                onClick={() => {
+                  const allSelected = categories.every(c => selectedCategoryIds.includes(c.id))
+                  if (allSelected) {
+                    setSelectedCategoryIds([])
+                    setActiveCategoryTab('')
+                  } else {
+                    setSelectedCategoryIds(categories.map(c => c.id))
+                    if (activeCategoryTab === '' && categories.length > 0) setActiveCategoryTab(categories[0].id)
+                  }
+                }}
+                className="text-xs font-medium text-blue-600 py-1 px-2"
+              >
+                {categories.every(c => selectedCategoryIds.includes(c.id)) ? 'Alle abwählen' : 'Alle auswählen'}
+              </button>
+            </div>
             {categories.map(cat => {
               const selected = selectedCategoryIds.includes(cat.id)
               return (
@@ -342,6 +359,23 @@ export default function PlanningWizard() {
             </div>
 
             <div className="px-4 py-4 space-y-2 flex-1 overflow-y-auto">
+              {/* Select all row */}
+              {(itemsByCategory[activeCategoryTab] ?? []).length > 0 && (() => {
+                const catItems = itemsByCategory[activeCategoryTab] ?? []
+                const allSel = catItems.every(it => selections[it.id]?.selected)
+                return (
+                  <button
+                    onClick={() => catItems.forEach(it => setSelections(prev => ({
+                      ...prev,
+                      [it.id]: { itemId: it.id, selected: !allSel, quantity: prev[it.id]?.quantity ?? 1 },
+                    })))}
+                    className="w-full flex items-center justify-between px-4 py-2.5 rounded-xl bg-gray-50 border border-gray-100 text-sm"
+                  >
+                    <span className="text-gray-500">Alle in dieser Kategorie</span>
+                    <span className="font-medium text-blue-600">{allSel ? 'Alle abwählen' : 'Alle auswählen'}</span>
+                  </button>
+                )
+              })()}
               {(itemsByCategory[activeCategoryTab] ?? []).map(item => {
                 const sel = selections[item.id]
                 const isSelected = sel?.selected ?? false

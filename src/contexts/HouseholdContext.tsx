@@ -37,29 +37,37 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
     setLoading(true)
 
     async function load() {
-      const { data: memberRow } = await supabase
-        .from('household_members')
-        .select('household_id')
-        .eq('user_id', user!.id)
-        .maybeSingle()
-
-      if (!memberRow || cancelled) {
-        if (!cancelled) { setHousehold(null); setMembers([]); setLoading(false) }
-        return
-      }
-
-      const [{ data: hh }, { data: memberList }] = await Promise.all([
-        supabase.from('households').select('*').eq('id', memberRow.household_id).single(),
-        supabase
+      try {
+        const { data: memberRow, error: memberErr } = await supabase
           .from('household_members')
-          .select('id, household_id, user_id, role, joined_at')
-          .eq('household_id', memberRow.household_id),
-      ])
+          .select('household_id')
+          .eq('user_id', user!.id)
+          .maybeSingle()
 
-      if (cancelled) return
-      setHousehold(hh ?? null)
-      setMembers(memberList ?? [])
-      setLoading(false)
+        if (memberErr) throw memberErr
+
+        if (!memberRow || cancelled) {
+          if (!cancelled) { setHousehold(null); setMembers([]); setLoading(false) }
+          return
+        }
+
+        const [{ data: hh, error: hhErr }, { data: memberList }] = await Promise.all([
+          supabase.from('households').select('*').eq('id', memberRow.household_id).single(),
+          supabase
+            .from('household_members')
+            .select('id, household_id, user_id, role, joined_at')
+            .eq('household_id', memberRow.household_id),
+        ])
+
+        if (hhErr) throw hhErr
+        if (cancelled) return
+        setHousehold(hh ?? null)
+        setMembers(memberList ?? [])
+        setLoading(false)
+      } catch (err) {
+        console.error('Household load error:', err)
+        if (!cancelled) { setHousehold(null); setMembers([]); setLoading(false) }
+      }
     }
 
     load()

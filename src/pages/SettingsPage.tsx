@@ -1,18 +1,23 @@
 import { useEffect, useState } from 'react'
 import {
-  LogOut, Plus, Trash2, Edit2, Check, X, Users, Tag, Layers, ChevronDown, ChevronRight,
-  Copy, Link
+  LogOut, Plus, Trash2, Edit2, Check, X, Users, Tag, Layers, Link, Copy,
 } from 'lucide-react'
+import {
+  DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors,
+  DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext, verticalListSortingStrategy, arrayMove,
+} from '@dnd-kit/sortable'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
 import { useHousehold } from '../contexts/HouseholdContext'
 import { Category, Item, TripType } from '../types'
+import SortableItem from '../components/ui/SortableItem'
 
 type Tab = 'categories' | 'triptypes' | 'household'
 
-function InlineEdit({
-  value, onSave, onCancel,
-}: { value: string; onSave: (v: string) => void; onCancel: () => void }) {
+function InlineEdit({ value, onSave, onCancel }: { value: string; onSave: (v: string) => void; onCancel: () => void }) {
   const [v, setV] = useState(value)
   return (
     <div className="flex items-center gap-2 flex-1">
@@ -55,8 +60,12 @@ export default function SettingsPage() {
   const [inviteLink, setInviteLink] = useState<string | null>(null)
   const [inviteLoading, setInviteLoading] = useState(false)
   const [copiedLink, setCopiedLink] = useState(false)
-
   const [loading, setLoading] = useState(true)
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+  )
 
   useEffect(() => {
     if (!household) return
@@ -72,11 +81,7 @@ export default function SettingsPage() {
 
   async function loadCategoryItems(catId: string) {
     if (itemsByCategory[catId]) return
-    const { data } = await supabase
-      .from('items')
-      .select('*')
-      .eq('category_id', catId)
-      .order('sort_order')
+    const { data } = await supabase.from('items').select('*').eq('category_id', catId).order('sort_order')
     setItemsByCategory(prev => ({ ...prev, [catId]: data ?? [] }))
   }
 
@@ -86,13 +91,45 @@ export default function SettingsPage() {
     if (nowExpanded) loadCategoryItems(catId)
   }
 
-  // Category CRUD
+  // ─── Drag & drop handlers ───────────────────────────────────────────
+
+  async function handleCatDragEnd(event: DragEndEvent) {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const oldIdx = categories.findIndex(c => c.id === active.id)
+    const newIdx = categories.findIndex(c => c.id === over.id)
+    const reordered = arrayMove(categories, oldIdx, newIdx)
+    setCategories(reordered)
+    await Promise.all(
+      reordered.map((cat, i) =>
+        supabase.from('categories').update({ sort_order: i }).eq('id', cat.id).then(() => {})
+      )
+    )
+  }
+
+  async function handleItemDragEnd(event: DragEndEvent, catId: string) {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const items = itemsByCategory[catId] ?? []
+    const oldIdx = items.findIndex(i => i.id === active.id)
+    const newIdx = items.findIndex(i => i.id === over.id)
+    const reordered = arrayMove(items, oldIdx, newIdx)
+    setItemsByCategory(prev => ({ ...prev, [catId]: reordered }))
+    await Promise.all(
+      reordered.map((item, i) =>
+        supabase.from('items').update({ sort_order: i }).eq('id', item.id).then(() => {})
+      )
+    )
+  }
+
+  // ─── Category CRUD ──────────────────────────────────────────────────
+
   async function addCategory() {
     if (!newCatName.trim() || !household) return
-    const maxOrder = Math.max(0, ...categories.map(c => c.sort_order))
+    const maxOrder = categories.length
     const { data } = await supabase
       .from('categories')
-      .insert({ household_id: household.id, name: newCatName.trim(), sort_order: maxOrder + 1 })
+      .insert({ household_id: household.id, name: newCatName.trim(), sort_order: maxOrder })
       .select().single()
     if (data) setCategories(prev => [...prev, data])
     setNewCatName('')
@@ -112,15 +149,15 @@ export default function SettingsPage() {
     setItemsByCategory(prev => { const n = { ...prev }; delete n[id]; return n })
   }
 
-  // Item CRUD
+  // ─── Item CRUD ──────────────────────────────────────────────────────
+
   async function addItem(catId: string) {
     const name = newItemNames[catId]?.trim()
     if (!name || !household) return
     const currentItems = itemsByCategory[catId] ?? []
-    const maxOrder = Math.max(0, ...currentItems.map(i => i.sort_order))
     const { data } = await supabase
       .from('items')
-      .insert({ household_id: household.id, category_id: catId, name, sort_order: maxOrder + 1 })
+      .insert({ household_id: household.id, category_id: catId, name, sort_order: currentItems.length })
       .select().single()
     if (data) setItemsByCategory(prev => ({ ...prev, [catId]: [...(prev[catId] ?? []), data] }))
     setNewItemNames(prev => ({ ...prev, [catId]: '' }))
@@ -141,13 +178,12 @@ export default function SettingsPage() {
     setItemsByCategory(prev => ({ ...prev, [catId]: (prev[catId] ?? []).filter(it => it.id !== id) }))
   }
 
-  // Trip type CRUD
+  // ─── Trip type CRUD ─────────────────────────────────────────────────
+
   async function addTripType() {
     if (!newTTName.trim() || !household) return
     const { data } = await supabase
-      .from('trip_types')
-      .insert({ household_id: household.id, name: newTTName.trim() })
-      .select().single()
+      .from('trip_types').insert({ household_id: household.id, name: newTTName.trim() }).select().single()
     if (data) setTripTypes(prev => [...prev, data])
     setNewTTName('')
   }
@@ -164,7 +200,8 @@ export default function SettingsPage() {
     setTripTypes(prev => prev.filter(t => t.id !== id))
   }
 
-  // Household
+  // ─── Household ──────────────────────────────────────────────────────
+
   async function handleGenerateLink() {
     setInviteLoading(true)
     const { link, error } = await generateInviteLink()
@@ -203,93 +240,122 @@ export default function SettingsPage() {
             }`}
           >
             {t.icon}
-            <span className="hidden sm:inline">{t.label}</span>
+            <span>{t.label}</span>
           </button>
         ))}
       </div>
 
-      {loading && <div className="flex justify-center py-12"><div className="w-6 h-6 border-3 border-blue-600 border-t-transparent rounded-full animate-spin" /></div>}
+      {loading && (
+        <div className="flex justify-center py-12">
+          <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+        </div>
+      )}
 
-      {/* Categories tab */}
+      {/* ── Categories tab ── */}
       {!loading && tab === 'categories' && (
         <div className="space-y-2">
-          {categories.map(cat => (
-            <div key={cat.id} className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-              <div className="flex items-center gap-2 px-4 py-3">
-                {editingCatId === cat.id ? (
-                  <InlineEdit
-                    value={cat.name}
-                    onSave={v => renameCategory(cat.id, v)}
-                    onCancel={() => setEditingCatId(null)}
-                  />
-                ) : (
-                  <>
-                    <button
-                      onClick={() => toggleCat(cat.id)}
-                      className="flex-1 flex items-center gap-2 text-left min-touch"
-                    >
-                      {expandedCats[cat.id]
-                        ? <ChevronDown size={16} className="text-gray-400" />
-                        : <ChevronRight size={16} className="text-gray-400" />
-                      }
-                      <span className="font-semibold text-gray-800">{cat.name}</span>
-                    </button>
-                    <button onClick={() => setEditingCatId(cat.id)} className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center">
-                      <Edit2 size={14} className="text-gray-400" />
-                    </button>
-                    <button onClick={() => deleteCategory(cat.id)} className="w-8 h-8 rounded-lg bg-red-50 flex items-center justify-center">
-                      <Trash2 size={14} className="text-red-400" />
-                    </button>
-                  </>
-                )}
-              </div>
+          <p className="text-xs text-gray-400 px-1 mb-3">Reihenfolge per Drag &amp; Drop ändern</p>
 
-              {expandedCats[cat.id] && (
-                <div className="border-t border-gray-50 px-4 py-2">
-                  <div className="space-y-1 mb-2">
-                    {(itemsByCategory[cat.id] ?? []).map(item => (
-                      <div key={item.id} className="flex items-center gap-2 py-1.5">
-                        {editingItemId === item.id ? (
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleCatDragEnd}>
+            <SortableContext items={categories.map(c => c.id)} strategy={verticalListSortingStrategy}>
+              {categories.map(cat => (
+                <SortableItem key={cat.id} id={cat.id}>
+                  {(handle) => (
+                    <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                      <div className="flex items-center gap-1 px-2 py-2.5">
+                        {handle}
+                        {editingCatId === cat.id ? (
                           <InlineEdit
-                            value={item.name}
-                            onSave={v => renameItem(item.id, cat.id, v)}
-                            onCancel={() => setEditingItemId(null)}
+                            value={cat.name}
+                            onSave={v => renameCategory(cat.id, v)}
+                            onCancel={() => setEditingCatId(null)}
                           />
                         ) : (
                           <>
-                            <span className="flex-1 text-sm text-gray-600 pl-1">{item.name}</span>
-                            <button onClick={() => setEditingItemId(item.id)} className="w-7 h-7 rounded-lg bg-gray-50 flex items-center justify-center">
-                              <Edit2 size={12} className="text-gray-400" />
+                            <button
+                              onClick={() => toggleCat(cat.id)}
+                              className="flex-1 flex items-center gap-2 text-left py-1 pl-1"
+                            >
+                              <span className="font-semibold text-gray-800">{cat.name}</span>
+                              <span className="text-xs text-gray-400">
+                                {expandedCats[cat.id] ? '▲' : '▼'}
+                              </span>
                             </button>
-                            <button onClick={() => deleteItem(item.id, cat.id)} className="w-7 h-7 rounded-lg bg-red-50 flex items-center justify-center">
-                              <Trash2 size={12} className="text-red-400" />
+                            <button onClick={() => setEditingCatId(cat.id)} className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center">
+                              <Edit2 size={14} className="text-gray-400" />
+                            </button>
+                            <button onClick={() => deleteCategory(cat.id)} className="w-8 h-8 rounded-lg bg-red-50 flex items-center justify-center">
+                              <Trash2 size={14} className="text-red-400" />
                             </button>
                           </>
                         )}
                       </div>
-                    ))}
-                  </div>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={newItemNames[cat.id] ?? ''}
-                      onChange={e => setNewItemNames(prev => ({ ...prev, [cat.id]: e.target.value }))}
-                      onKeyDown={e => e.key === 'Enter' && addItem(cat.id)}
-                      placeholder="Neuer Artikel"
-                      className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-                    />
-                    <button
-                      onClick={() => addItem(cat.id)}
-                      disabled={!newItemNames[cat.id]?.trim()}
-                      className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center disabled:opacity-40"
-                    >
-                      <Plus size={16} className="text-blue-600" />
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
+
+                      {expandedCats[cat.id] && (
+                        <div className="border-t border-gray-50 px-3 py-2">
+                          <DndContext
+                            sensors={sensors}
+                            collisionDetection={closestCenter}
+                            onDragEnd={e => handleItemDragEnd(e, cat.id)}
+                          >
+                            <SortableContext
+                              items={(itemsByCategory[cat.id] ?? []).map(i => i.id)}
+                              strategy={verticalListSortingStrategy}
+                            >
+                              {(itemsByCategory[cat.id] ?? []).map(item => (
+                                <SortableItem key={item.id} id={item.id}>
+                                  {(itemHandle) => (
+                                    <div className="flex items-center gap-1 py-1">
+                                      {itemHandle}
+                                      {editingItemId === item.id ? (
+                                        <InlineEdit
+                                          value={item.name}
+                                          onSave={v => renameItem(item.id, cat.id, v)}
+                                          onCancel={() => setEditingItemId(null)}
+                                        />
+                                      ) : (
+                                        <>
+                                          <span className="flex-1 text-sm text-gray-600 pl-1">{item.name}</span>
+                                          <button onClick={() => setEditingItemId(item.id)} className="w-7 h-7 rounded-lg bg-gray-50 flex items-center justify-center">
+                                            <Edit2 size={12} className="text-gray-400" />
+                                          </button>
+                                          <button onClick={() => deleteItem(item.id, cat.id)} className="w-7 h-7 rounded-lg bg-red-50 flex items-center justify-center">
+                                            <Trash2 size={12} className="text-red-400" />
+                                          </button>
+                                        </>
+                                      )}
+                                    </div>
+                                  )}
+                                </SortableItem>
+                              ))}
+                            </SortableContext>
+                          </DndContext>
+
+                          <div className="flex gap-2 mt-2">
+                            <input
+                              type="text"
+                              value={newItemNames[cat.id] ?? ''}
+                              onChange={e => setNewItemNames(prev => ({ ...prev, [cat.id]: e.target.value }))}
+                              onKeyDown={e => e.key === 'Enter' && addItem(cat.id)}
+                              placeholder="Neuer Artikel"
+                              className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                            />
+                            <button
+                              onClick={() => addItem(cat.id)}
+                              disabled={!newItemNames[cat.id]?.trim()}
+                              className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center disabled:opacity-40"
+                            >
+                              <Plus size={16} className="text-blue-600" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </SortableItem>
+              ))}
+            </SortableContext>
+          </DndContext>
 
           <div className="flex gap-2 mt-3">
             <input
@@ -311,7 +377,7 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {/* Trip types tab */}
+      {/* ── Trip types tab ── */}
       {!loading && tab === 'triptypes' && (
         <div className="space-y-2">
           {tripTypes.map(tt => (
@@ -335,7 +401,6 @@ export default function SettingsPage() {
               )}
             </div>
           ))}
-
           <div className="flex gap-2 mt-3">
             <input
               type="text"
@@ -356,7 +421,7 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {/* Household tab */}
+      {/* ── Household tab ── */}
       {!loading && tab === 'household' && (
         <div className="space-y-4">
           <div className="bg-white rounded-2xl border border-gray-100 p-4">
@@ -371,21 +436,14 @@ export default function SettingsPage() {
             {members.map(member => (
               <div key={member.id} className="flex items-center px-4 py-3 border-b border-gray-50 last:border-b-0">
                 <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center mr-3 flex-shrink-0">
-                  <span className="text-blue-600 text-xs font-bold">
-                    {member.user_id.slice(0, 2).toUpperCase()}
-                  </span>
+                  <span className="text-blue-600 text-xs font-bold">{member.user_id.slice(0, 2).toUpperCase()}</span>
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-800 truncate">
-                    {member.user_id === user?.id ? 'Du' : `Mitglied`}
-                  </p>
+                  <p className="text-sm font-medium text-gray-800">{member.user_id === user?.id ? 'Du' : 'Mitglied'}</p>
                   <p className="text-xs text-gray-400">{member.role === 'admin' ? 'Admin' : 'Mitglied'}</p>
                 </div>
                 {myRole === 'admin' && member.user_id !== user?.id && (
-                  <button
-                    onClick={() => removeMember(member.user_id)}
-                    className="w-8 h-8 rounded-lg bg-red-50 flex items-center justify-center"
-                  >
+                  <button onClick={() => removeMember(member.user_id)} className="w-8 h-8 rounded-lg bg-red-50 flex items-center justify-center">
                     <Trash2 size={14} className="text-red-400" />
                   </button>
                 )}
@@ -396,7 +454,6 @@ export default function SettingsPage() {
           {myRole === 'admin' && (
             <div className="bg-white rounded-2xl border border-gray-100 p-4 space-y-3">
               <p className="text-sm font-semibold text-gray-700">Mitglied einladen</p>
-
               <button
                 onClick={handleGenerateLink}
                 disabled={inviteLoading}
@@ -407,14 +464,10 @@ export default function SettingsPage() {
                   : <><Link size={16} /> Einladungslink generieren</>
                 }
               </button>
-
               {inviteLink && (
                 <div className="bg-gray-50 rounded-xl p-3 space-y-2">
                   <p className="text-xs text-gray-500 break-all">{inviteLink}</p>
-                  <button
-                    onClick={copyLink}
-                    className="flex items-center gap-2 text-sm font-medium text-blue-600"
-                  >
+                  <button onClick={copyLink} className="flex items-center gap-2 text-sm font-medium text-blue-600">
                     {copiedLink ? <><Check size={14} /> Kopiert!</> : <><Copy size={14} /> Link kopieren</>}
                   </button>
                 </div>
