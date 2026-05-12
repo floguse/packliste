@@ -18,6 +18,7 @@ export default function InvitePage() {
   const [state, setState] = useState<State>('loading')
   const [householdName, setHouseholdName] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
+  const [acceptedHouseholdId, setAcceptedHouseholdId] = useState<string | null>(null)
 
   // Auth form
   const [authMode, setAuthMode] = useState<AuthMode>('register')
@@ -73,10 +74,33 @@ export default function InvitePage() {
       setErrorMsg(error?.message ?? 'Fehler beim Beitreten.')
       return
     }
+    setAcceptedHouseholdId(data as string)
     refresh()
-    setState('done')
-    setTimeout(() => navigate('/'), 2000)
+    // Navigation passiert erst, wenn household tatsächlich geladen ist (siehe useEffect)
   }
+
+  // Warte bis HouseholdContext den neuen Haushalt geladen hat, bevor weitergeleitet wird
+  useEffect(() => {
+    if (state !== 'joining' || !acceptedHouseholdId) return
+    if (household?.id === acceptedHouseholdId) {
+      setState('done')
+      const t = setTimeout(() => navigate('/'), 1200)
+      return () => clearTimeout(t)
+    }
+  }, [household, state, acceptedHouseholdId, navigate])
+
+  // Safety-Timeout: falls der Reload des Haushalts hängt, nach 15s Fehler zeigen
+  useEffect(() => {
+    if (state !== 'joining') return
+    const t = setTimeout(() => {
+      setState(curr => {
+        if (curr !== 'joining') return curr
+        setErrorMsg('Beitritt dauert ungewöhnlich lange. Bitte App neu laden.')
+        return 'error'
+      })
+    }, 15000)
+    return () => clearTimeout(t)
+  }, [state])
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center px-6 pt-safe">
