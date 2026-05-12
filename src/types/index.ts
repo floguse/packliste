@@ -72,3 +72,17 @@ export interface PlanningState {
   selectedCategoryIds: string[]
   selectedItems: Record<string, { quantity: number; selected: boolean }>
 }
+
+export interface TripTemplate {
+  id: string
+  household_id: string
+  name: string
+  created_at: string
+}
+
+export interface TemplateItem {
+  id: string
+  template_id: string
+  item_id: string
+  quantity: number
+}
