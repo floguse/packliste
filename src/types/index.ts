@@ -12,6 +12,13 @@ export interface HouseholdMember {
   role: 'admin' | 'member'
   joined_at: string
   email?: string
+  display_name?: string | null
+}
+
+export interface Profile {
+  user_id: string
+  display_name: string | null
+  updated_at: string
 }
 
 export interface Invitation {

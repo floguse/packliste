@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
-  LogOut, Plus, Trash2, Edit2, Check, X, Users, Tag, Layers, Link, Copy, Shield, ShieldOff,
+  LogOut, Plus, Trash2, Edit2, Check, X, Users, Tag, Layers, Link, Copy, Shield, ShieldOff, User as UserIcon,
 } from 'lucide-react'
 import {
   DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors,
@@ -41,8 +41,28 @@ function InlineEdit({ value, onSave, onCancel }: { value: string; onSave: (v: st
 
 export default function SettingsPage() {
   const { signOut, user } = useAuth()
-  const { household, members, removeMember, setMemberRole, generateInviteLink } = useHousehold()
+  const { household, members, myDisplayName, removeMember, setMemberRole, setMyDisplayName, generateInviteLink } = useHousehold()
   const [roleChangingId, setRoleChangingId] = useState<string | null>(null)
+  const [nameDraft, setNameDraft] = useState('')
+  const [nameSaving, setNameSaving] = useState(false)
+  const [nameSavedAt, setNameSavedAt] = useState<number | null>(null)
+  const [nameError, setNameError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setNameDraft(myDisplayName ?? '')
+  }, [myDisplayName])
+
+  async function saveDisplayName() {
+    setNameError(null)
+    setNameSaving(true)
+    const { error } = await setMyDisplayName(nameDraft)
+    setNameSaving(false)
+    if (error) setNameError(error)
+    else {
+      setNameSavedAt(Date.now())
+      setTimeout(() => setNameSavedAt(null), 2000)
+    }
+  }
 
   const [tab, setTab] = useState<Tab>('categories')
   const [categories, setCategories] = useState<Category[]>([])
@@ -425,6 +445,44 @@ export default function SettingsPage() {
       {/* ── Household tab ── */}
       {!loading && tab === 'household' && (
         <div className="space-y-4">
+          {/* Eigener Anzeigename */}
+          <div className="bg-white rounded-2xl border border-gray-100 p-4">
+            <label className="flex items-center gap-1.5 text-xs text-gray-400 mb-2">
+              <UserIcon size={12} />
+              Mein Name
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={nameDraft}
+                onChange={e => setNameDraft(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && nameDraft.trim() !== (myDisplayName ?? '')) saveDisplayName()
+                }}
+                placeholder="z.B. Max"
+                maxLength={50}
+                className="flex-1 px-3 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+              />
+              <button
+                onClick={saveDisplayName}
+                disabled={nameSaving || nameDraft.trim() === (myDisplayName ?? '')}
+                className="px-4 h-11 bg-blue-600 text-white rounded-xl text-sm font-medium flex items-center justify-center disabled:opacity-40"
+              >
+                {nameSaving ? (
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : nameSavedAt ? (
+                  <Check size={16} />
+                ) : (
+                  'Speichern'
+                )}
+              </button>
+            </div>
+            {nameError && <p className="text-xs text-red-500 mt-2">{nameError}</p>}
+            <p className="text-[11px] text-gray-400 mt-2">
+              Wird anderen Mitgliedern deines Haushalts angezeigt.
+            </p>
+          </div>
+
           <div className="bg-white rounded-2xl border border-gray-100 p-4">
             <p className="text-xs text-gray-400 mb-1">Haushalt</p>
             <p className="font-semibold text-gray-900">{household?.name}</p>
@@ -448,6 +506,10 @@ export default function SettingsPage() {
                 setRoleChangingId(null)
               }
 
+              const displayName = member.display_name?.trim()
+              const fallbackInitials = (displayName ?? member.user_id).slice(0, 2).toUpperCase()
+              const primaryLabel = displayName || (isMe ? 'Du' : 'Mitglied')
+
               return (
                 <div key={member.id} className="flex items-center px-4 py-3 border-b border-gray-50 last:border-b-0 gap-2">
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
@@ -455,21 +517,24 @@ export default function SettingsPage() {
                   }`}>
                     {isAdmin
                       ? <Shield size={14} className="text-amber-600" />
-                      : <span className="text-blue-600 text-xs font-bold">{member.user_id.slice(0, 2).toUpperCase()}</span>
+                      : <span className="text-blue-600 text-xs font-bold">{fallbackInitials}</span>
                     }
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <p className="text-sm font-medium text-gray-800 truncate">{isMe ? 'Du' : 'Mitglied'}</p>
+                      <p className="text-sm font-medium text-gray-800 truncate">{primaryLabel}</p>
+                      {isMe && displayName && (
+                        <span className="text-[10px] text-gray-400">(du)</span>
+                      )}
                       {isAdmin && (
                         <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
                           ADMIN
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-gray-400 truncate">
-                      {member.user_id.slice(0, 8)}…
-                    </p>
+                    {!displayName && (
+                      <p className="text-xs text-gray-400 truncate">{member.user_id.slice(0, 8)}…</p>
+                    )}
                   </div>
 
                   {myRole === 'admin' && (

@@ -6,11 +6,13 @@ import { useAuth } from './AuthContext'
 interface HouseholdContextType {
   household: Household | null
   members: HouseholdMember[]
+  myDisplayName: string | null
   loading: boolean
   createHousehold: (name: string) => Promise<{ error: string | null }>
   inviteMember: (email: string) => Promise<{ token: string | null; error: string | null }>
   removeMember: (userId: string) => Promise<{ error: string | null }>
   setMemberRole: (userId: string, role: 'admin' | 'member') => Promise<{ error: string | null }>
+  setMyDisplayName: (name: string) => Promise<{ error: string | null }>
   generateInviteLink: () => Promise<{ link: string | null; error: string | null }>
   refresh: () => void
 }
@@ -21,6 +23,7 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth()
   const [household, setHousehold] = useState<Household | null>(null)
   const [members, setMembers] = useState<HouseholdMember[]>([])
+  const [myDisplayName, setMyDisplayNameState] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [tick, setTick] = useState(0)
 
@@ -62,8 +65,27 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
 
         if (hhErr) throw hhErr
         if (cancelled) return
+
+        // Profile aller Mitglieder nachladen
+        const userIds = (memberList ?? []).map(m => m.user_id)
+        let profileMap = new Map<string, string | null>()
+        if (userIds.length > 0) {
+          const { data: profileList } = await supabase
+            .from('profiles')
+            .select('user_id, display_name')
+            .in('user_id', userIds)
+          if (cancelled) return
+          profileMap = new Map((profileList ?? []).map(p => [p.user_id, p.display_name]))
+        }
+
+        const membersWithNames = (memberList ?? []).map(m => ({
+          ...m,
+          display_name: profileMap.get(m.user_id) ?? null,
+        }))
+
         setHousehold(hh ?? null)
-        setMembers(memberList ?? [])
+        setMembers(membersWithNames)
+        setMyDisplayNameState(profileMap.get(user!.id) ?? null)
         setLoading(false)
       } catch (err) {
         console.error('Household load error:', err)
@@ -142,10 +164,36 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
     return { error: null }
   }
 
+  async function setMyDisplayName(name: string) {
+    if (!user) return { error: 'Not authenticated' }
+    const trimmed = name.trim()
+
+    // In profiles-Tabelle upserten (für Sichtbarkeit anderer Haushaltsmitglieder)
+    const { error: profileErr } = await supabase
+      .from('profiles')
+      .upsert({
+        user_id: user.id,
+        display_name: trimmed || null,
+        updated_at: new Date().toISOString(),
+      })
+    if (profileErr) return { error: profileErr.message }
+
+    // Zusätzlich in Supabase Auth user_metadata.display_name schreiben
+    // (damit der Name auch im Supabase-Dashboard angezeigt wird)
+    await supabase.auth.updateUser({ data: { display_name: trimmed || null } })
+
+    setMyDisplayNameState(trimmed || null)
+    setMembers(prev => prev.map(m =>
+      m.user_id === user.id ? { ...m, display_name: trimmed || null } : m
+    ))
+    return { error: null }
+  }
+
   return (
     <HouseholdContext.Provider value={{
-      household, members, loading, createHousehold,
-      inviteMember, removeMember, setMemberRole, generateInviteLink, refresh,
+      household, members, myDisplayName, loading, createHousehold,
+      inviteMember, removeMember, setMemberRole, setMyDisplayName,
+      generateInviteLink, refresh,
     }}>
       {children}
     </HouseholdContext.Provider>
