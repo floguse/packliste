@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, ArrowRight, Check, Plus, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, BookmarkPlus, Check, ChevronDown, ChevronUp, Plus, X } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { useHousehold } from '../../contexts/HouseholdContext'
 import { useAuth } from '../../contexts/AuthContext'
-import { TripType, Category, Item } from '../../types'
+import { TripType, Category, Item, TripTemplate } from '../../types'
 
 interface ItemSelection {
   itemId: string
@@ -30,6 +30,11 @@ export default function PlanningWizard() {
   const [categories, setCategories] = useState<Category[]>([])
   const [itemsByCategory, setItemsByCategory] = useState<Record<string, Item[]>>({})
 
+  const [templates, setTemplates] = useState<TripTemplate[]>([])
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
+  const [applyingTemplate, setApplyingTemplate] = useState(false)
+  const [showTemplates, setShowTemplates] = useState(false)
+
   const [saving, setSaving] = useState(false)
   const [newTripTypeName, setNewTripTypeName] = useState('')
   const [newCategoryName, setNewCategoryName] = useState('')
@@ -40,9 +45,12 @@ export default function PlanningWizard() {
     Promise.all([
       supabase.from('trip_types').select('*').eq('household_id', household.id).order('name'),
       supabase.from('categories').select('*').eq('household_id', household.id).order('sort_order'),
-    ]).then(([{ data: tt }, { data: cats }]) => {
+      supabase.from('trip_templates').select('*').eq('household_id', household.id).order('created_at', { ascending: false }),
+    ]).then(([{ data: tt }, { data: cats }, { data: tmpl }]) => {
       setTripTypes(tt ?? [])
       setCategories(cats ?? [])
+      setTemplates(tmpl ?? [])
+      if ((tmpl ?? []).length > 0) setShowTemplates(true)
     })
   }, [household])
 
@@ -72,6 +80,67 @@ export default function PlanningWizard() {
       setActiveCategoryTab(selectedCategoryIds[0])
     }
   }, [selectedCategoryIds, activeCategoryTab])
+
+  async function applyTemplate(templateId: string) {
+    if (!household) return
+    setApplyingTemplate(true)
+    setSelectedTemplateId(templateId)
+
+    const { data: templateItems } = await supabase
+      .from('template_items')
+      .select('item_id, quantity')
+      .eq('template_id', templateId)
+
+    if (!templateItems || templateItems.length === 0) {
+      setApplyingTemplate(false)
+      return
+    }
+
+    const itemIds = templateItems.map(ti => ti.item_id)
+    const { data: items } = await supabase
+      .from('items')
+      .select('*')
+      .in('id', itemIds)
+      .eq('household_id', household.id)
+
+    if (!items) { setApplyingTemplate(false); return }
+
+    const categoryIds = [...new Set(items.map(it => it.category_id))]
+    const orderedCategoryIds = categories
+      .filter(c => categoryIds.includes(c.id))
+      .map(c => c.id)
+
+    const newItemsByCategory: Record<string, Item[]> = { ...itemsByCategory }
+    for (const catId of orderedCategoryIds) {
+      if (!newItemsByCategory[catId]) {
+        const { data: catItems } = await supabase
+          .from('items')
+          .select('*')
+          .eq('category_id', catId)
+          .eq('household_id', household.id)
+          .order('sort_order')
+        newItemsByCategory[catId] = catItems ?? []
+      }
+    }
+
+    const newSelections: Record<string, ItemSelection> = {}
+    for (const ti of templateItems) {
+      newSelections[ti.item_id] = { itemId: ti.item_id, quantity: ti.quantity, selected: true }
+    }
+
+    setItemsByCategory(newItemsByCategory)
+    setSelectedCategoryIds(orderedCategoryIds)
+    setActiveCategoryTab(orderedCategoryIds[0] ?? '')
+    setSelections(newSelections)
+    setApplyingTemplate(false)
+  }
+
+  function clearTemplate() {
+    setSelectedTemplateId(null)
+    setSelectedCategoryIds([])
+    setSelections({})
+    setActiveCategoryTab('')
+  }
 
   async function addTripType() {
     if (!newTripTypeName.trim() || !household) return
@@ -209,9 +278,69 @@ export default function PlanningWizard() {
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
 
-        {/* Step 1: Trip name + type */}
+        {/* Step 1: Trip name + type + template */}
         {step === 1 && (
           <div className="px-4 py-6 space-y-5">
+
+            {/* Template selection */}
+            {templates.length > 0 && (
+              <div className="bg-blue-50 border border-blue-100 rounded-2xl overflow-hidden">
+                <button
+                  onClick={() => setShowTemplates(v => !v)}
+                  className="w-full flex items-center justify-between px-4 py-3.5 text-left"
+                >
+                  <div className="flex items-center gap-2">
+                    <BookmarkPlus size={17} className="text-blue-600" />
+                    <span className="font-medium text-blue-800 text-sm">
+                      {selectedTemplateId
+                        ? `Vorlage: ${templates.find(t => t.id === selectedTemplateId)?.name}`
+                        : 'Vorlage verwenden'}
+                    </span>
+                  </div>
+                  {showTemplates ? (
+                    <ChevronUp size={16} className="text-blue-500" />
+                  ) : (
+                    <ChevronDown size={16} className="text-blue-500" />
+                  )}
+                </button>
+
+                {showTemplates && (
+                  <div className="border-t border-blue-100 px-4 py-3 space-y-2">
+                    {selectedTemplateId && (
+                      <button
+                        onClick={clearTemplate}
+                        className="w-full text-left text-xs text-gray-400 hover:text-gray-600 py-1"
+                      >
+                        × Vorlage entfernen
+                      </button>
+                    )}
+                    {templates.map(template => {
+                      const isSelected = selectedTemplateId === template.id
+                      return (
+                        <button
+                          key={template.id}
+                          onClick={() => isSelected ? clearTemplate() : applyTemplate(template.id)}
+                          disabled={applyingTemplate}
+                          className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm text-left transition-colors disabled:opacity-50 ${
+                            isSelected
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-white text-gray-700 border border-blue-100'
+                          }`}
+                        >
+                          <span className="font-medium">{template.name}</span>
+                          {applyingTemplate && selectedTemplateId === template.id ? (
+                            <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                          ) : isSelected ? (
+                            <Check size={16} />
+                          ) : null}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1.5">Reisename</label>
               <input
@@ -265,6 +394,14 @@ export default function PlanningWizard() {
         {/* Step 2: Category selection */}
         {step === 2 && (
           <div className="px-4 py-6 space-y-3">
+            {selectedTemplateId && (
+              <div className="flex items-center gap-2 bg-blue-50 border border-blue-100 rounded-xl px-3 py-2.5">
+                <BookmarkPlus size={15} className="text-blue-500 flex-shrink-0" />
+                <p className="text-xs text-blue-700">
+                  Kategorien aus Vorlage vorausgewählt – du kannst sie anpassen.
+                </p>
+              </div>
+            )}
             <div className="flex items-center justify-between">
               <p className="text-sm text-gray-500">Wähle die Kategorien für diese Reise.</p>
               <button
@@ -444,6 +581,14 @@ export default function PlanningWizard() {
         {/* Step 4: Summary */}
         {step === 4 && (
           <div className="px-4 py-6 space-y-4">
+            {selectedTemplateId && (
+              <div className="flex items-center gap-2 bg-blue-50 border border-blue-100 rounded-xl px-3 py-2.5">
+                <BookmarkPlus size={15} className="text-blue-500 flex-shrink-0" />
+                <p className="text-xs text-blue-700">
+                  Basiert auf Vorlage „{templates.find(t => t.id === selectedTemplateId)?.name}"
+                </p>
+              </div>
+            )}
             <div className="bg-white rounded-2xl border border-gray-100 p-4">
               <p className="text-xs text-gray-400 mb-1">Reisename</p>
               <p className="font-semibold text-gray-900">{tripName}</p>

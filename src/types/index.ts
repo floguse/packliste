@@ -61,6 +61,7 @@ export interface TripItem {
   item_id: string
   quantity: number
   packed: boolean
+  packed_count: number
   packed_by?: string
   packed_at?: string
   item?: Item & { category?: Category }
@@ -71,4 +72,18 @@ export interface PlanningState {
   tripTypeId: string
   selectedCategoryIds: string[]
   selectedItems: Record<string, { quantity: number; selected: boolean }>
+}
+
+export interface TripTemplate {
+  id: string
+  household_id: string
+  name: string
+  created_at: string
+}
+
+export interface TemplateItem {
+  id: string
+  template_id: string
+  item_id: string
+  quantity: number
 }

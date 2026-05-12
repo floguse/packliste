@@ -1,39 +1,59 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Archive, Copy, ChevronRight } from 'lucide-react'
+import { AlertTriangle, Archive, BookmarkPlus, Check, ChevronRight, Trash2, X } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useHousehold } from '../contexts/HouseholdContext'
-import { useAuth } from '../contexts/AuthContext'
-import { Trip } from '../types'
+import { Trip, TripTemplate } from '../types'
 
 interface ArchivedTrip extends Trip {
   total: number
 }
 
+interface SaveState {
+  tripId: string
+  name: string
+}
+
 export default function ArchivePage() {
   const { household } = useHousehold()
-  const { user } = useAuth()
   const navigate = useNavigate()
   const [trips, setTrips] = useState<ArchivedTrip[]>([])
+  const [templates, setTemplates] = useState<TripTemplate[]>([])
   const [loading, setLoading] = useState(true)
-  const [copying, setCopying] = useState<string | null>(null)
+  const [saveState, setSaveState] = useState<SaveState | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [savedId, setSavedId] = useState<string | null>(null)
+  const [deletingTemplateId, setDeletingTemplateId] = useState<string | null>(null)
+  const [deleteTripState, setDeleteTripState] = useState<ArchivedTrip | null>(null)
+  const [deletingTrip, setDeletingTrip] = useState(false)
 
   useEffect(() => {
     if (!household) return
     let cancelled = false
 
     async function load() {
-      const { data } = await supabase
-        .from('trips')
-        .select('*, trip_type:trip_types(id, name, household_id)')
-        .eq('household_id', household!.id)
-        .eq('status', 'done')
-        .order('created_at', { ascending: false })
+      const [{ data: tripData }, { data: templateData }] = await Promise.all([
+        supabase
+          .from('trips')
+          .select('*, trip_type:trip_types(id, name, household_id)')
+          .eq('household_id', household!.id)
+          .eq('status', 'done')
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('trip_templates')
+          .select('*')
+          .eq('household_id', household!.id)
+          .order('created_at', { ascending: false }),
+      ])
 
-      if (cancelled || !data) { setLoading(false); return }
+      if (cancelled) return
+
+      setTemplates(templateData ?? [])
+
+      if (!tripData) { setLoading(false); return }
 
       const withCounts = await Promise.all(
-        data.map(async (trip) => {
+        tripData.map(async (trip) => {
           const { count } = await supabase
             .from('trip_items')
             .select('*', { count: 'exact', head: true })
@@ -49,42 +69,59 @@ export default function ArchivePage() {
     return () => { cancelled = true }
   }, [household])
 
-  async function copyAsTemplate(trip: ArchivedTrip) {
-    if (!household || !user) return
-    setCopying(trip.id)
+  function openSaveDialog(trip: ArchivedTrip) {
+    setSaveState({ tripId: trip.id, name: trip.name })
+  }
 
-    const { data: newTrip, error } = await supabase
-      .from('trips')
-      .insert({
-        household_id: household.id,
-        name: `${trip.name} (Kopie)`,
-        trip_type_id: trip.trip_type_id,
-        status: 'planning',
-        created_by: user.id,
-      })
+  async function saveAsTemplate() {
+    if (!saveState || !household) return
+    setSaving(true)
+
+    const { data: template, error } = await supabase
+      .from('trip_templates')
+      .insert({ household_id: household.id, name: saveState.name.trim() })
       .select()
       .single()
 
-    if (error || !newTrip) { setCopying(null); return }
+    if (error || !template) { setSaving(false); return }
 
     const { data: sourceItems } = await supabase
       .from('trip_items')
       .select('item_id, quantity')
-      .eq('trip_id', trip.id)
+      .eq('trip_id', saveState.tripId)
 
     if (sourceItems && sourceItems.length > 0) {
-      await supabase.from('trip_items').insert(
+      await supabase.from('template_items').insert(
         sourceItems.map((item) => ({
-          trip_id: newTrip.id,
+          template_id: template.id,
           item_id: item.item_id,
           quantity: item.quantity,
-          packed: false,
         }))
       )
     }
 
-    setCopying(null)
-    navigate(`/trip/${newTrip.id}`)
+    setTemplates(prev => [template, ...prev])
+    setSavedId(saveState.tripId)
+    setSaveState(null)
+    setSaving(false)
+    setTimeout(() => setSavedId(null), 2000)
+  }
+
+  async function deleteTemplate(templateId: string) {
+    setDeletingTemplateId(templateId)
+    await supabase.from('trip_templates').delete().eq('id', templateId)
+    setTemplates(prev => prev.filter(t => t.id !== templateId))
+    setDeletingTemplateId(null)
+  }
+
+  async function confirmDeleteTrip() {
+    if (!deleteTripState) return
+    setDeletingTrip(true)
+    const tripId = deleteTripState.id
+    await supabase.from('trips').delete().eq('id', tripId)
+    setTrips(prev => prev.filter(t => t.id !== tripId))
+    setDeletingTrip(false)
+    setDeleteTripState(null)
   }
 
   function formatDate(iso: string) {
@@ -93,10 +130,127 @@ export default function ArchivePage() {
 
   return (
     <div className="px-4 pt-8 pb-4">
+      {/* Templates Section */}
+      {templates.length > 0 && (
+        <div className="mb-8">
+          <div className="mb-3">
+            <h2 className="text-lg font-bold text-gray-900">Vorlagen</h2>
+            <p className="text-gray-500 text-sm mt-0.5">Als Basis für neue Reisen verwenden</p>
+          </div>
+          <div className="space-y-2">
+            {templates.map(template => (
+              <div
+                key={template.id}
+                className="bg-blue-50 border border-blue-100 rounded-2xl px-4 py-3.5 flex items-center justify-between gap-3"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-8 h-8 rounded-xl bg-blue-100 flex items-center justify-center flex-shrink-0">
+                    <BookmarkPlus size={16} className="text-blue-600" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-medium text-gray-900 truncate">{template.name}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">{formatDate(template.created_at)}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => deleteTemplate(template.id)}
+                  disabled={deletingTemplateId === template.id}
+                  className="w-8 h-8 flex items-center justify-center rounded-xl text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors disabled:opacity-40 flex-shrink-0"
+                >
+                  {deletingTemplateId === template.id ? (
+                    <div className="w-4 h-4 border-2 border-gray-300 border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <Trash2 size={16} />
+                  )}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Archive Section */}
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Archiv</h1>
         <p className="text-gray-500 text-sm mt-0.5">Abgeschlossene Reisen</p>
       </div>
+
+      {/* Save-as-template dialog */}
+      {saveState && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/30">
+          <div className="bg-white w-full max-w-md rounded-t-3xl px-5 pt-5 pb-8" style={{ paddingBottom: 'max(32px, env(safe-area-inset-bottom))' }}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-gray-900">Als Vorlage speichern</h3>
+              <button onClick={() => setSaveState(null)} className="w-8 h-8 flex items-center justify-center rounded-xl bg-gray-100">
+                <X size={16} className="text-gray-500" />
+              </button>
+            </div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Vorlagenname</label>
+            <input
+              type="text"
+              value={saveState.name}
+              onChange={e => setSaveState(prev => prev ? { ...prev, name: e.target.value } : null)}
+              onKeyDown={e => e.key === 'Enter' && saveState.name.trim() && saveAsTemplate()}
+              className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 text-base mb-4"
+              autoFocus
+            />
+            <button
+              onClick={saveAsTemplate}
+              disabled={saving || !saveState.name.trim()}
+              className="w-full bg-blue-600 text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 disabled:opacity-40"
+            >
+              {saving ? (
+                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <>
+                  <BookmarkPlus size={18} />
+                  Vorlage speichern
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Delete-trip confirmation */}
+      {deleteTripState && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/30">
+          <div className="bg-white w-full max-w-md rounded-t-3xl px-5 pt-5 pb-8" style={{ paddingBottom: 'max(32px, env(safe-area-inset-bottom))' }}>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center flex-shrink-0">
+                <AlertTriangle size={20} className="text-red-500" />
+              </div>
+              <h3 className="font-semibold text-gray-900">Reise löschen?</h3>
+            </div>
+            <p className="text-sm text-gray-600 mb-5">
+              „{deleteTripState.name}" wird unwiderruflich gelöscht – inkl. aller {deleteTripState.total} Artikel.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setDeleteTripState(null)}
+                disabled={deletingTrip}
+                className="flex-1 bg-gray-100 text-gray-700 font-semibold py-3.5 rounded-xl"
+              >
+                Abbrechen
+              </button>
+              <button
+                onClick={confirmDeleteTrip}
+                disabled={deletingTrip}
+                className="flex-1 bg-red-500 text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {deletingTrip ? (
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <>
+                    <Trash2 size={18} />
+                    Löschen
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {loading && (
         <div className="space-y-3">
@@ -138,17 +292,23 @@ export default function ArchivePage() {
                 </div>
                 <div className="flex gap-2">
                   <button
-                    onClick={() => copyAsTemplate(trip)}
-                    disabled={copying === trip.id}
-                    className="flex items-center gap-1.5 bg-gray-100 text-gray-600 px-3 py-2 rounded-xl text-sm font-medium min-touch disabled:opacity-50"
-                    title="Als Vorlage kopieren"
+                    onClick={() => openSaveDialog(trip)}
+                    className="flex items-center gap-1.5 bg-gray-100 text-gray-600 px-3 py-2 rounded-xl text-sm font-medium min-touch"
+                    title="Als Vorlage speichern"
                   >
-                    {copying === trip.id ? (
-                      <div className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                    {savedId === trip.id ? (
+                      <Check size={16} className="text-green-600" />
                     ) : (
-                      <Copy size={16} />
+                      <BookmarkPlus size={16} />
                     )}
-                    <span>Kopieren</span>
+                    <span>{savedId === trip.id ? 'Gespeichert' : 'Vorlage'}</span>
+                  </button>
+                  <button
+                    onClick={() => setDeleteTripState(trip)}
+                    className="flex items-center justify-center w-10 h-10 bg-red-50 rounded-xl"
+                    title="Reise löschen"
+                  >
+                    <Trash2 size={16} className="text-red-400" />
                   </button>
                   <button
                     onClick={() => navigate(`/trip/${trip.id}`)}

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
-  LogOut, Plus, Trash2, Edit2, Check, X, Users, Tag, Layers, Link, Copy,
+  LogOut, Plus, Trash2, Edit2, Check, X, Users, Tag, Layers, Link, Copy, Shield, ShieldOff,
 } from 'lucide-react'
 import {
   DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors,
@@ -41,7 +41,8 @@ function InlineEdit({ value, onSave, onCancel }: { value: string; onSave: (v: st
 
 export default function SettingsPage() {
   const { signOut, user } = useAuth()
-  const { household, members, removeMember, generateInviteLink } = useHousehold()
+  const { household, members, removeMember, setMemberRole, generateInviteLink } = useHousehold()
+  const [roleChangingId, setRoleChangingId] = useState<string | null>(null)
 
   const [tab, setTab] = useState<Tab>('categories')
   const [categories, setCategories] = useState<Category[]>([])
@@ -433,22 +434,85 @@ export default function SettingsPage() {
             <div className="px-4 py-3 border-b border-gray-50">
               <p className="text-sm font-semibold text-gray-700">Mitglieder ({members.length})</p>
             </div>
-            {members.map(member => (
-              <div key={member.id} className="flex items-center px-4 py-3 border-b border-gray-50 last:border-b-0">
-                <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center mr-3 flex-shrink-0">
-                  <span className="text-blue-600 text-xs font-bold">{member.user_id.slice(0, 2).toUpperCase()}</span>
+            {members.map(member => {
+              const isMe = member.user_id === user?.id
+              const isAdmin = member.role === 'admin'
+              const adminCount = members.filter(m => m.role === 'admin').length
+              const isLastAdmin = isAdmin && adminCount === 1
+              const isChanging = roleChangingId === member.user_id
+
+              async function toggleRole() {
+                if (isLastAdmin) return
+                setRoleChangingId(member.user_id)
+                await setMemberRole(member.user_id, isAdmin ? 'member' : 'admin')
+                setRoleChangingId(null)
+              }
+
+              return (
+                <div key={member.id} className="flex items-center px-4 py-3 border-b border-gray-50 last:border-b-0 gap-2">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
+                    isAdmin ? 'bg-amber-100' : 'bg-blue-100'
+                  }`}>
+                    {isAdmin
+                      ? <Shield size={14} className="text-amber-600" />
+                      : <span className="text-blue-600 text-xs font-bold">{member.user_id.slice(0, 2).toUpperCase()}</span>
+                    }
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-sm font-medium text-gray-800 truncate">{isMe ? 'Du' : 'Mitglied'}</p>
+                      {isAdmin && (
+                        <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
+                          ADMIN
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-400 truncate">
+                      {member.user_id.slice(0, 8)}…
+                    </p>
+                  </div>
+
+                  {myRole === 'admin' && (
+                    <>
+                      <button
+                        onClick={toggleRole}
+                        disabled={isChanging || isLastAdmin}
+                        title={
+                          isLastAdmin
+                            ? 'Letzter Admin – Rolle kann nicht entzogen werden'
+                            : isAdmin
+                              ? 'Admin-Rechte entziehen'
+                              : 'Zum Admin machen'
+                        }
+                        className={`w-8 h-8 rounded-lg flex items-center justify-center disabled:opacity-30 ${
+                          isAdmin ? 'bg-amber-50' : 'bg-gray-50'
+                        }`}
+                      >
+                        {isChanging ? (
+                          <div className="w-3.5 h-3.5 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                        ) : isAdmin ? (
+                          <ShieldOff size={14} className="text-amber-600" />
+                        ) : (
+                          <Shield size={14} className="text-gray-400" />
+                        )}
+                      </button>
+
+                      {!isMe && (
+                        <button
+                          onClick={() => {
+                            if (confirm('Mitglied wirklich entfernen?')) removeMember(member.user_id)
+                          }}
+                          className="w-8 h-8 rounded-lg bg-red-50 flex items-center justify-center"
+                          title="Mitglied entfernen"
+                        >
+                          <Trash2 size={14} className="text-red-400" />
+                        </button>
+                      )}
+                    </>
+                  )}
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-800">{member.user_id === user?.id ? 'Du' : 'Mitglied'}</p>
-                  <p className="text-xs text-gray-400">{member.role === 'admin' ? 'Admin' : 'Mitglied'}</p>
-                </div>
-                {myRole === 'admin' && member.user_id !== user?.id && (
-                  <button onClick={() => removeMember(member.user_id)} className="w-8 h-8 rounded-lg bg-red-50 flex items-center justify-center">
-                    <Trash2 size={14} className="text-red-400" />
-                  </button>
-                )}
-              </div>
-            ))}
+              )
+            })}
           </div>
 
           {myRole === 'admin' && (
