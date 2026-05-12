@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Archive, BookmarkPlus, Check, ChevronRight, Trash2, X } from 'lucide-react'
+import { AlertTriangle, Archive, BookmarkPlus, Check, ChevronRight, Trash2, X } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useHousehold } from '../contexts/HouseholdContext'
 import { Trip, TripTemplate } from '../types'
@@ -24,6 +24,8 @@ export default function ArchivePage() {
   const [saving, setSaving] = useState(false)
   const [savedId, setSavedId] = useState<string | null>(null)
   const [deletingTemplateId, setDeletingTemplateId] = useState<string | null>(null)
+  const [deleteTripState, setDeleteTripState] = useState<ArchivedTrip | null>(null)
+  const [deletingTrip, setDeletingTrip] = useState(false)
 
   useEffect(() => {
     if (!household) return
@@ -110,6 +112,16 @@ export default function ArchivePage() {
     await supabase.from('trip_templates').delete().eq('id', templateId)
     setTemplates(prev => prev.filter(t => t.id !== templateId))
     setDeletingTemplateId(null)
+  }
+
+  async function confirmDeleteTrip() {
+    if (!deleteTripState) return
+    setDeletingTrip(true)
+    const tripId = deleteTripState.id
+    await supabase.from('trips').delete().eq('id', tripId)
+    setTrips(prev => prev.filter(t => t.id !== tripId))
+    setDeletingTrip(false)
+    setDeleteTripState(null)
   }
 
   function formatDate(iso: string) {
@@ -200,6 +212,46 @@ export default function ArchivePage() {
         </div>
       )}
 
+      {/* Delete-trip confirmation */}
+      {deleteTripState && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/30">
+          <div className="bg-white w-full max-w-md rounded-t-3xl px-5 pt-5 pb-8" style={{ paddingBottom: 'max(32px, env(safe-area-inset-bottom))' }}>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center flex-shrink-0">
+                <AlertTriangle size={20} className="text-red-500" />
+              </div>
+              <h3 className="font-semibold text-gray-900">Reise löschen?</h3>
+            </div>
+            <p className="text-sm text-gray-600 mb-5">
+              „{deleteTripState.name}" wird unwiderruflich gelöscht – inkl. aller {deleteTripState.total} Artikel.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setDeleteTripState(null)}
+                disabled={deletingTrip}
+                className="flex-1 bg-gray-100 text-gray-700 font-semibold py-3.5 rounded-xl"
+              >
+                Abbrechen
+              </button>
+              <button
+                onClick={confirmDeleteTrip}
+                disabled={deletingTrip}
+                className="flex-1 bg-red-500 text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {deletingTrip ? (
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <>
+                    <Trash2 size={18} />
+                    Löschen
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {loading && (
         <div className="space-y-3">
           {[1, 2, 3].map(i => (
@@ -250,6 +302,13 @@ export default function ArchivePage() {
                       <BookmarkPlus size={16} />
                     )}
                     <span>{savedId === trip.id ? 'Gespeichert' : 'Vorlage'}</span>
+                  </button>
+                  <button
+                    onClick={() => setDeleteTripState(trip)}
+                    className="flex items-center justify-center w-10 h-10 bg-red-50 rounded-xl"
+                    title="Reise löschen"
+                  >
+                    <Trash2 size={16} className="text-red-400" />
                   </button>
                   <button
                     onClick={() => navigate(`/trip/${trip.id}`)}

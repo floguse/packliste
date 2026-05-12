@@ -61,6 +61,7 @@ export interface TripItem {
   item_id: string
   quantity: number
   packed: boolean
+  packed_count: number
   packed_by?: string
   packed_at?: string
   item?: Item & { category?: Category }

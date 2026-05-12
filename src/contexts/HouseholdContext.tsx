@@ -10,6 +10,7 @@ interface HouseholdContextType {
   createHousehold: (name: string) => Promise<{ error: string | null }>
   inviteMember: (email: string) => Promise<{ token: string | null; error: string | null }>
   removeMember: (userId: string) => Promise<{ error: string | null }>
+  setMemberRole: (userId: string, role: 'admin' | 'member') => Promise<{ error: string | null }>
   generateInviteLink: () => Promise<{ link: string | null; error: string | null }>
   refresh: () => void
 }
@@ -127,10 +128,24 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
     return { error: null }
   }
 
+  async function setMemberRole(userId: string, role: 'admin' | 'member') {
+    if (!household) return { error: 'No household' }
+
+    const { error } = await supabase
+      .from('household_members')
+      .update({ role })
+      .eq('household_id', household.id)
+      .eq('user_id', userId)
+
+    if (error) return { error: error.message }
+    setMembers(prev => prev.map(m => m.user_id === userId ? { ...m, role } : m))
+    return { error: null }
+  }
+
   return (
     <HouseholdContext.Provider value={{
       household, members, loading, createHousehold,
-      inviteMember, removeMember, generateInviteLink, refresh,
+      inviteMember, removeMember, setMemberRole, generateInviteLink, refresh,
     }}>
       {children}
     </HouseholdContext.Provider>

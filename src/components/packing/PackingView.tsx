@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, RotateCcw, CheckCircle2, ChevronDown, ChevronRight, Pencil } from 'lucide-react'
+import { ArrowLeft, RotateCcw, CheckCircle2, CheckCheck, ChevronDown, ChevronRight, Pencil, X } from 'lucide-react'
 import {
   DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, DragEndEvent,
 } from '@dnd-kit/core'
@@ -43,6 +43,7 @@ export default function PackingView() {
   const [resetting, setResetting] = useState(false)
   const [finishing, setFinishing] = useState(false)
   const [editing, setEditing] = useState(false)
+  const [sheetItemId, setSheetItemId] = useState<string | null>(null)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -117,7 +118,13 @@ export default function PackingView() {
                 ...g,
                 items: g.items.map(it =>
                   it.id === updated.id
-                    ? { ...it, packed: updated.packed, packed_by: updated.packed_by, packed_at: updated.packed_at }
+                    ? {
+                        ...it,
+                        packed: updated.packed,
+                        packed_count: updated.packed_count,
+                        packed_by: updated.packed_by,
+                        packed_at: updated.packed_at,
+                      }
                     : it
                 ),
               }))
@@ -131,9 +138,12 @@ export default function PackingView() {
   }, [id])
 
   async function togglePacked(tripItem: TripItem) {
+    // Einfacher Toggle für Menge = 1 (qty > 1 wird übers Sheet geregelt)
+    const qty = tripItem.quantity
     const newPacked = !tripItem.packed
+    const newCount = newPacked ? qty : 0
+    const nowIso = new Date().toISOString()
 
-    // Optimistic update
     setGroups(prev =>
       prev.map(g => ({
         ...g,
@@ -142,8 +152,9 @@ export default function PackingView() {
             ? {
                 ...it,
                 packed: newPacked,
+                packed_count: newCount,
                 packed_by: newPacked ? user?.id : undefined,
-                packed_at: newPacked ? new Date().toISOString() : undefined,
+                packed_at: newPacked ? nowIso : undefined,
               }
             : it
         ),
@@ -154,8 +165,74 @@ export default function PackingView() {
       .from('trip_items')
       .update({
         packed: newPacked,
+        packed_count: newCount,
         packed_by: newPacked ? user?.id : null,
-        packed_at: newPacked ? new Date().toISOString() : null,
+        packed_at: newPacked ? nowIso : null,
+      })
+      .eq('id', tripItem.id)
+  }
+
+  async function setPackedCount(tripItem: TripItem, rawCount: number) {
+    const qty = tripItem.quantity
+    const newCount = Math.max(0, Math.min(rawCount, qty))
+    const newPacked = newCount >= qty && qty > 0
+    const nowIso = new Date().toISOString()
+
+    setGroups(prev =>
+      prev.map(g => ({
+        ...g,
+        items: g.items.map(it =>
+          it.id === tripItem.id
+            ? {
+                ...it,
+                packed: newPacked,
+                packed_count: newCount,
+                packed_by: newCount > 0 ? user?.id : undefined,
+                packed_at: newPacked ? nowIso : undefined,
+              }
+            : it
+        ),
+      }))
+    )
+
+    await supabase
+      .from('trip_items')
+      .update({
+        packed: newPacked,
+        packed_count: newCount,
+        packed_by: newCount > 0 ? user?.id : null,
+        packed_at: newPacked ? nowIso : null,
+      })
+      .eq('id', tripItem.id)
+  }
+
+  async function setPlannedQuantity(tripItem: TripItem, rawQty: number) {
+    const newQty = Math.max(1, rawQty)
+    const cappedCount = Math.min(tripItem.packed_count ?? 0, newQty)
+    const newPacked = cappedCount >= newQty
+
+    setGroups(prev =>
+      prev.map(g => ({
+        ...g,
+        items: g.items.map(it =>
+          it.id === tripItem.id
+            ? {
+                ...it,
+                quantity: newQty,
+                packed: newPacked,
+                packed_count: cappedCount,
+              }
+            : it
+        ),
+      }))
+    )
+
+    await supabase
+      .from('trip_items')
+      .update({
+        quantity: newQty,
+        packed: newPacked,
+        packed_count: cappedCount,
       })
       .eq('id', tripItem.id)
   }
@@ -165,12 +242,18 @@ export default function PackingView() {
     setResetting(true)
     await supabase
       .from('trip_items')
-      .update({ packed: false, packed_by: null, packed_at: null })
+      .update({ packed: false, packed_count: 0, packed_by: null, packed_at: null })
       .eq('trip_id', id)
     setGroups(prev =>
       prev.map(g => ({
         ...g,
-        items: g.items.map(it => ({ ...it, packed: false, packed_by: undefined, packed_at: undefined })),
+        items: g.items.map(it => ({
+          ...it,
+          packed: false,
+          packed_count: 0,
+          packed_by: undefined,
+          packed_at: undefined,
+        })),
       }))
     )
     setResetting(false)
@@ -321,38 +404,61 @@ export default function PackingView() {
                     onDragEnd={e => handleItemDragEnd(e, category.id)}
                   >
                     <SortableContext items={items.map(i => i.id)} strategy={verticalListSortingStrategy}>
-                      {items.map(item => (
+                      {items.map(item => {
+                        const count = item.packed_count ?? (item.packed ? item.quantity : 0)
+                        const isFull = item.packed
+                        const isPartial = !isFull && count > 0
+                        const hasMultiple = item.quantity > 1
+                        return (
                         <SortableItem key={item.id} id={item.id}>
                           {(handle) => (
                             <div className={`flex items-center border-b border-gray-50 last:border-b-0 transition-colors ${
-                              item.packed ? 'bg-green-50' : ''
+                              isFull ? 'bg-green-50' : isPartial ? 'bg-amber-50' : ''
                             }`}>
                               {trip.status === 'packing' && handle}
                               <button
-                                onClick={() => trip.status !== 'done' && togglePacked(item)}
+                                onClick={() => {
+                                  if (trip.status === 'done') return
+                                  if (hasMultiple) setSheetItemId(item.id)
+                                  else togglePacked(item)
+                                }}
                                 disabled={trip.status === 'done'}
                                 className="flex-1 flex items-center gap-3 px-3 py-3.5 text-left active:bg-gray-50"
                               >
                                 <div className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
-                                  item.packed ? 'bg-green-500 border-green-500' : 'border-gray-300'
+                                  isFull
+                                    ? 'bg-green-500 border-green-500'
+                                    : isPartial
+                                      ? 'bg-amber-400 border-amber-400'
+                                      : 'border-gray-300'
                                 }`}>
-                                  {item.packed && <CheckCircle2 size={14} className="text-white" strokeWidth={2.5} />}
+                                  {isFull && <CheckCircle2 size={14} className="text-white" strokeWidth={2.5} />}
+                                  {isPartial && (
+                                    <span className="text-[10px] font-bold text-white leading-none">{count}</span>
+                                  )}
                                 </div>
                                 <span className={`flex-1 text-sm font-medium transition-colors ${
-                                  item.packed ? 'line-through text-gray-400' : 'text-gray-700'
+                                  isFull ? 'line-through text-gray-400' : 'text-gray-700'
                                 }`}>
                                   {(item.item as any)?.name ?? ''}
                                 </span>
                                 {item.quantity > 1 && (
-                                  <span className={`text-xs font-medium ${item.packed ? 'text-gray-300' : 'text-gray-400'}`}>
-                                    ×{item.quantity}
+                                  <span className={`text-xs font-medium ${
+                                    isFull
+                                      ? 'text-gray-300'
+                                      : isPartial
+                                        ? 'text-amber-600'
+                                        : 'text-gray-400'
+                                  }`}>
+                                    {isPartial ? `${count}/${item.quantity}` : `×${item.quantity}`}
                                   </span>
                                 )}
                               </button>
                             </div>
                           )}
                         </SortableItem>
-                      ))}
+                        )
+                      })}
                     </SortableContext>
                   </DndContext>
                 </div>
@@ -400,6 +506,114 @@ export default function PackingView() {
           </button>
         </div>
       )}
+
+      {sheetItemId && (() => {
+        const item = allItems.find(i => i.id === sheetItemId)
+        if (!item) return null
+        const count = item.packed_count ?? (item.packed ? item.quantity : 0)
+        const name = (item.item as any)?.name ?? ''
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/30" onClick={() => setSheetItemId(null)}>
+            <div
+              className="bg-white w-full max-w-md rounded-t-3xl px-5 pt-5"
+              style={{ paddingBottom: 'max(24px, env(safe-area-inset-bottom))' }}
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-5">
+                <div className="min-w-0">
+                  <p className="text-xs text-gray-400 font-medium">Artikel</p>
+                  <h3 className="font-semibold text-gray-900 truncate">{name}</h3>
+                </div>
+                <button
+                  onClick={() => setSheetItemId(null)}
+                  className="w-9 h-9 flex items-center justify-center rounded-xl bg-gray-100 flex-shrink-0"
+                >
+                  <X size={18} className="text-gray-500" />
+                </button>
+              </div>
+
+              {/* Alle gepackt */}
+              <button
+                onClick={() => { setPackedCount(item, item.quantity); setSheetItemId(null) }}
+                disabled={count >= item.quantity}
+                className="w-full flex items-center justify-center gap-2 bg-green-600 text-white font-semibold py-3.5 rounded-xl mb-5 disabled:opacity-40"
+              >
+                <CheckCheck size={18} />
+                Alle {item.quantity} gepackt
+              </button>
+
+              {/* Eingepackt */}
+              <div className="bg-gray-50 rounded-2xl p-4 mb-3">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <p className="text-xs text-gray-400 font-medium">Eingepackt</p>
+                    <p className="text-lg font-bold text-gray-900">
+                      {count} <span className="text-gray-400 font-medium">/ {item.quantity}</span>
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setPackedCount(item, count - 1)}
+                      disabled={count <= 0}
+                      className="w-11 h-11 rounded-xl bg-white border border-gray-200 flex items-center justify-center font-bold text-xl text-gray-700 disabled:opacity-30"
+                    >
+                      −
+                    </button>
+                    <button
+                      onClick={() => setPackedCount(item, count + 1)}
+                      disabled={count >= item.quantity}
+                      className="w-11 h-11 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold text-xl disabled:opacity-40"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+                {count > 0 && (
+                  <button
+                    onClick={() => setPackedCount(item, 0)}
+                    className="text-xs text-gray-500 font-medium"
+                  >
+                    Zurücksetzen
+                  </button>
+                )}
+              </div>
+
+              {/* Geplante Anzahl */}
+              <div className="bg-gray-50 rounded-2xl p-4 mb-5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs text-gray-400 font-medium">Geplante Anzahl</p>
+                    <p className="text-lg font-bold text-gray-900">{item.quantity}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setPlannedQuantity(item, item.quantity - 1)}
+                      disabled={item.quantity <= 1}
+                      className="w-11 h-11 rounded-xl bg-white border border-gray-200 flex items-center justify-center font-bold text-xl text-gray-700 disabled:opacity-30"
+                    >
+                      −
+                    </button>
+                    <button
+                      onClick={() => setPlannedQuantity(item, item.quantity + 1)}
+                      className="w-11 h-11 rounded-xl bg-white border border-gray-200 flex items-center justify-center font-bold text-xl text-gray-700"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setSheetItemId(null)}
+                className="w-full bg-gray-100 text-gray-700 font-semibold py-3.5 rounded-xl"
+              >
+                Fertig
+              </button>
+            </div>
+          </div>
+        )
+      })()}
 
       {editing && id && (
         <EditTripSheet
